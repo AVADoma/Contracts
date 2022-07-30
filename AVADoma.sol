@@ -1,5 +1,8 @@
 //SPDX-License-Identifier: Unlicense
-pragma solidity ^0.8.0;
+pragma solidity ^0.8.7;
+
+import "@chainlink/contracts/src/v0.8/interfaces/VRFCoordinatorV2Interface.sol";
+import "@chainlink/contracts/src/v0.8/VRFConsumerBaseV2.sol";
 
 /**
  * @dev Provides information about the current execution context, including the
@@ -27,7 +30,17 @@ abstract contract Context {
 * @notice Use a contract to register domain names.
 * @dev A contract being developed that allows domain names to be registered.
  */
-contract AVADoma is Context {
+contract AVADoma is VRFConsumerBaseV2, Context {
+    VRFCoordinatorV2Interface COORDINATOR;
+
+    address vrfCoordinator = 0x2eD832Ba664535e5886b75D64C46EB9a228C2610;
+    bytes32 keyHash = 0x354d2f95da55398f44b7cff77da56283d9c6c829a4bdf1bbcaf2ad6a4d081f61;
+    uint32 callbackGasLimit = 100000;
+    uint16 requestConfirmations = 3;
+    uint32 numWords = 2;
+    uint256 s_randomWord;
+    uint64 s_subscriptionId;
+    uint256 requestId;
 
     /**
      * @dev A list of top-level domain names.
@@ -165,10 +178,12 @@ contract AVADoma is Context {
     //       user     id_lottery
     mapping(address => uint256) private _user_lottery;
 
-    constructor() {
+    constructor() VRFConsumerBaseV2(vrfCoordinator) {
+        COORDINATOR = VRFCoordinatorV2Interface(vrfCoordinator);
         _owner = payable(msg.sender);
         Domain memory d; // Genesis domain
         domains.push(d);
+        createNewSubscription();
     }
     
     /**
@@ -429,9 +444,27 @@ contract AVADoma is Context {
     /**
      * @dev Determination of the lottery winner.
      */
-    function winnerLottery() public onlyOwner returns (Winner memory) {
-        require(_lottery[id_lottery].length >= 10, "The winner will be determined when there are more than 10 participants.");
-        uint256 _r = random();
+    function winnerLottery() public onlyOwner {
+        require(_lottery[id_lottery].length >= 2, "The winner will be determined when there are more than 10 participants.");
+        requestId = COORDINATOR.requestRandomWords(
+            keyHash,
+            s_subscriptionId,
+            requestConfirmations,
+            callbackGasLimit,
+            numWords
+        );
+    }
+
+    function fulfillRandomWords(
+        uint256, /* requestId */
+        uint256[] memory randomWords
+    ) internal override {
+        s_randomWord = randomWords[0];
+    }
+
+    function winnerLotteryAdd(
+    ) public onlyOwner {
+        uint256 _r = s_randomWord;
         uint256 _r_owner = _r % _lottery[id_lottery].length;
         address _win = _lottery[id_lottery][_r_owner];
         (string memory _hostname, TLDs _tld) = randomDomain(_r);
@@ -477,17 +510,6 @@ contract AVADoma is Context {
         );
 
         id_lottery += 1;
-
-        return winner;
-    }
-
-    /**
-     * @dev Getting a pseudo-random number.
-     * The function will be replaced by Chainlink VRF when the 
-     * Avalanche blockchain implementation appears.
-     */
-    function random() private view returns (uint) {
-        return uint(keccak256(abi.encodePacked(block.difficulty, block.timestamp, _lottery[id_lottery].length)));
     }
 
     /**
@@ -768,5 +790,11 @@ contract AVADoma is Context {
     function withdraw() external onlyOwner returns(bool) {
         _owner.transfer(address(this).balance);
         return true;
+    }
+
+    function createNewSubscription() private onlyOwner {
+        s_subscriptionId = COORDINATOR.createSubscription();
+        // Add this contract as a consumer of its own subscription.
+        COORDINATOR.addConsumer(s_subscriptionId, address(this));
     }
 }
